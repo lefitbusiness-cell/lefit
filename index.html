@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LEFIT - Clean Food Scanner & Rezepte</title>
+    <meta name="description" content="Erkenne Snacks per Kamera, erhalte Leons Gesundheitscheck & Portionsempfehlungen und schalte 100% natürliche LEFIT-Clean-Rezepte frei." />
+    <meta property="og:title" content="LEFIT - Clean Food Scanner & Rezepte" />
+    <meta property="og:description" content="Erkenne Snacks per Kamera, erhalte Leons Gesundheitscheck & Portionsempfehlungen und schalte 100% natürliche LEFIT-Clean-Rezepte frei." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script>
+      // Ignore WebSocket HMR errors in AI Studio runtime
+      window.addEventListener('error', function (e) {
+        if (e.message && (e.message.includes('WebSocket') || e.message.includes('@vite/client') || e.message.includes('createWebSocketModuleRunnerTransport'))) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        var msg = e.reason ? (e.reason.message || e.reason.stack || String(e.reason)) : '';
+        if (msg.includes('WebSocket') || msg.includes('@vite/client') || msg.includes('createWebSocketModuleRunnerTransport')) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      });
+    </script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

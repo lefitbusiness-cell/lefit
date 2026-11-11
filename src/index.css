@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #120305;
+    color: #F8F4F4;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+}
+
+/* Refined matte pulse (no shiny neon bloom) */
+@keyframes lefitMattePulse {
+  0% {
+    transform: scale(0.97);
+  }
+  50% {
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(0.97);
+  }
+}
+
+/* Clean, crisp matte scanner laser line (no blur / no glow) */
+@keyframes matteScanLaser {
+  0% {
+    top: 6%;
+    opacity: 0.85;
+  }
+  50% {
+    top: 92%;
+    opacity: 1;
+  }
+  100% {
+    top: 6%;
+    opacity: 0.85;
+  }
+}
+
+@keyframes logoIntroAppear {
+  0% {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-matte-pulse {
+  animation: lefitMattePulse 2.4s ease-in-out infinite;
+}
+
+.animate-matte-laser {
+  animation: matteScanLaser 2.2s ease-in-out infinite;
+}
+
+.animate-logo-intro {
+  animation: logoIntroAppear 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Matte panels in exact LEFIT palette */
+.matte-card {
+  background-color: #1A070A;
+  border: 1px solid rgba(102, 15, 15, 0.4);
+}
+
+.matte-card-coral {
+  background-color: #240A0E;
+  border: 1px solid rgba(255, 87, 87, 0.3);
+}

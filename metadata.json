@@ -1,0 +1,8 @@
+{
+  "name": "LEFIT - Clean Food Scanner & Rezepte",
+  "description": "Erkenne Snacks per Kamera, erhalte Leons Gesundheitscheck & Portionsempfehlungen und schalte 100% natürliche LEFIT-Clean-Rezepte frei.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
