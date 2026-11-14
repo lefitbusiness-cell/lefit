@@ -1,5 +1,18 @@
-import React, { useEffect, useState } from 'react';
-import { ArrowLeft, Clock, Award, Check, Sparkles, ChefHat, Dumbbell, ShieldCheck, Share2, Printer } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  ArrowLeft,
+  Clock,
+  Award,
+  Check,
+  Sparkles,
+  ChefHat,
+  Dumbbell,
+  ShieldCheck,
+  Share2,
+  Printer,
+  Download,
+  Flame,
+} from 'lucide-react';
 import { ScannedProduct } from '../types';
 import { LefitLogo } from './LefitLogo';
 
@@ -12,24 +25,44 @@ interface RecipeDetailViewProps {
 export const RecipeDetailView: React.FC<RecipeDetailViewProps> = ({
   product,
   onBack,
-  onClose,
+  onClose: _onClose,
 }) => {
   const recipe = product.cleanRecipe;
   const [checkedIngredients, setCheckedIngredients] = useState<Record<number, boolean>>({});
   const [isCopied, setIsCopied] = useState(false);
+  const [actionToast, setActionToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const toggleIngredient = (idx: number) => {
-    setCheckedIngredients((prev) => ({
-      ...prev,
-      [idx]: !prev[idx],
-    }));
+  const originalCalories =
+    product.originalCalories ||
+    recipe.originalCalories ||
+    'ca. 550 kcal (Normal / Vorher)';
+
+  const cleanCalories =
+    product.cleanCalories ||
+    recipe.cleanCalories ||
+    recipe.macros.calories ||
+    'ca. 185 kcal';
+
+  const calorieSavings =
+    product.calorieSavings ||
+    recipe.calorieSavings ||
+    '-65% Zucker & 100% natürliche Vollwert-Zutaten';
+
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setActionToast({ type, text });
+    setTimeout(() => setActionToast(null), 3000);
   };
 
-  const handleCopyRecipe = () => {
-    const text = `
+  const formatRecipeText = () =>
+    `
 LEFIT Clean Rezept: ${recipe.title}
 Alternative zu: ${product.productName} (${product.brand})
 100% Natürlich • Ohne künstlichen Mist
+
+Kalorien-Vergleich:
+- Vorher Normal: ${originalCalories}
+- In Gesund (LEFIT): ${cleanCalories}
+- Ersparnis: ${calorieSavings}
 
 Makros: ${recipe.macros.calories} | Protein: ${recipe.macros.protein} | Carbs: ${recipe.macros.carbs} | Fett: ${recipe.macros.fat}
 Zubereitungszeit: ${recipe.prepTime}
@@ -44,33 +77,107 @@ Leons Fazit:
 ${recipe.leonsVerdict}
     `.trim();
 
-    navigator.clipboard?.writeText(text);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2500);
+  const toggleIngredient = (idx: number) => {
+    setCheckedIngredients((prev) => ({
+      ...prev,
+      [idx]: !prev[idx],
+    }));
+  };
+
+  const handleCopyRecipe = async () => {
+    const text = formatRecipeText();
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        copied = false;
+      }
+    }
+
+    if (copied) {
+      setIsCopied(true);
+      showToast('Rezept in Zwischenablage kopiert!');
+      setTimeout(() => setIsCopied(false), 2500);
+    } else {
+      showToast('Kopieren in diesem Browser blockiert – nutze den Download-Button.', 'error');
+    }
+  };
+
+  const handleDownloadRecipe = () => {
+    const text = formatRecipeText();
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeName = recipe.title.toLowerCase().replace(/[^a-z0-9äöüß]+/gi, '-').replace(/^-|-$/g, '');
+    link.href = url;
+    link.download = `lefit-${safeName || 'rezept'}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('Rezept als Textdatei heruntergeladen!');
   };
 
   return (
     <div className="flex flex-col h-full bg-[#1A070A] text-slate-100">
-      {/* Detail Header (Matte Palette) */}
-      <div className="px-5 py-4 border-b border-[#660F0F] bg-[#140507] flex items-center justify-between sticky top-0 z-20">
+      {/* Detail Header */}
+      <div className="px-5 py-4 border-b border-[#660F0F] bg-[#140507] flex items-center justify-between sticky top-0 z-20 gap-2">
         <button
           onClick={onBack}
-          className="px-3.5 py-2 rounded-xl bg-[#240A0E] hover:bg-[#330D13] text-[#FF5757] text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-[#660F0F]"
+          className="px-4 py-2 rounded-full bg-[#240A0E] hover:bg-[#330D13] text-[#FF5757] text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-[#660F0F]"
         >
           <ArrowLeft className="w-4 h-4" /> Zurück zur Liste
         </button>
 
+        {actionToast && (
+          <span
+            className={`text-xs font-bold hidden sm:inline ${
+              actionToast.type === 'error' ? 'text-[#ff414c]' : 'text-emerald-400'
+            }`}
+          >
+            {actionToast.text}
+          </span>
+        )}
+
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handleCopyRecipe}
-            className="p-2 rounded-xl bg-[#240A0E] hover:bg-[#330D13] text-[#FF5757] border border-[#660F0F] transition-colors"
+            className="p-2 rounded-full bg-[#240A0E] hover:bg-[#330D13] text-[#FF5757] border border-[#660F0F] transition-colors cursor-pointer"
             title="Rezept kopieren"
           >
             {isCopied ? <Check className="w-4 h-4 text-emerald-400" /> : <Share2 className="w-4 h-4" />}
           </button>
           <button
+            type="button"
+            onClick={handleDownloadRecipe}
+            className="p-2 rounded-full bg-[#240A0E] hover:bg-[#330D13] text-[#FF5757] border border-[#660F0F] transition-colors cursor-pointer"
+            title="Als Datei speichern"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => window.print()}
-            className="p-2 rounded-xl bg-[#240A0E] hover:bg-[#330D13] text-[#FF5757] border border-[#660F0F] transition-colors hidden sm:block"
+            className="p-2 rounded-full bg-[#240A0E] hover:bg-[#330D13] text-[#FF5757] border border-[#660F0F] transition-colors cursor-pointer"
             title="Drucken"
           >
             <Printer className="w-4 h-4" />
@@ -121,6 +228,59 @@ ${recipe.leonsVerdict}
               </span>
               <span className="text-xs sm:text-sm font-bold text-white mt-0.5">{recipe.servings}</span>
             </div>
+          </div>
+        </div>
+
+        {/* PROMINENT KALORIEN-VERGLEICH: Vorher Normal vs. In Gesund */}
+        <div className="rounded-2xl p-5 bg-[#140507] border-2 border-[#660F0F] shadow-sm">
+          <div className="text-xs font-black uppercase tracking-wider text-[#FF5757] mb-3 flex items-center gap-2">
+            <Flame className="w-4 h-4 text-[#FF5757]" />
+            <span>Kalorien-Vergleich: Normal (Vorher) vs. In Gesund (LEFIT)</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="p-4 rounded-xl bg-[#240A0E] border border-[#660F0F]">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#A66D6D]">
+                  Normal (Vorher)
+                </span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#1A070A] text-[#A66D6D] border border-[#660F0F] font-bold">
+                  Industriell
+                </span>
+              </div>
+              <div className="text-lg sm:text-xl font-black text-rose-300 leading-tight">
+                {originalCalories}
+              </div>
+              <div className="text-xs text-[#A66D6D] mt-1">
+                Herkömmliche Variante mit Zucker & raffinierten Fetten
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-[#1D080C] border-2 border-[#FF5757]">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-black uppercase tracking-wider text-[#FF5757]">
+                  In Gesund (LEFIT)
+                </span>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#660F0F] text-white border border-[#FF5757]/60 font-black">
+                  100% Natürlich
+                </span>
+              </div>
+              <div className="text-lg sm:text-xl font-black text-white leading-tight">
+                {cleanCalories}
+              </div>
+              <div className="text-xs text-[#FFBDBD] mt-1 font-semibold">
+                Nährstoffreich, vollwertig, ohne künstlichen Mist
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 p-3.5 rounded-xl bg-[#240A0E] border border-[#FF5757]/40 flex items-center gap-2.5">
+            <span className="text-xs font-black uppercase tracking-wider text-[#FF5757] shrink-0">
+              Vorteil & Ersparnis:
+            </span>
+            <span className="text-xs sm:text-sm font-bold text-white">
+              {calorieSavings}
+            </span>
           </div>
         </div>
 

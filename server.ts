@@ -1,9 +1,21 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import {
+  checkAccountExists,
+  authenticateAccount,
+  verifySessionToken,
+  getAccountByEmail,
+  toPublicUser,
+  saveUserRecipe,
+  syncUserRecipes,
+  deleteUserRecipe,
+  resetUserRecipes,
+  ServerAccountRecord,
+} from './server/lefitStore';
 
 dotenv.config();
 
@@ -11,10 +23,147 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const isProdEnv = process.env.NODE_ENV === 'production';
+const PORT = isProdEnv ? Number(process.env.PORT) || 3000 : 3000;
 
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));
+
+interface AuthenticatedRequest extends Request {
+  account?: ServerAccountRecord;
+}
+
+function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+  const verified = verifySessionToken(token);
+  if (!verified) {
+    return res.status(401).json({
+      success: false,
+      code: 'UNAUTHORIZED',
+      error: 'Bitte melde dich mit deinem Konto und dem richtigen Passwort an.',
+    });
+  }
+  const acc = getAccountByEmail(verified.email);
+  if (!acc) {
+    return res.status(401).json({
+      success: false,
+      code: 'ACCOUNT_NOT_FOUND',
+      error: 'Benutzerkonto nicht gefunden. Bitte erneut anmelden.',
+    });
+  }
+  req.account = acc;
+  next();
+}
+
+// Curated comparison metrics: Calories Vorher (normal/commercial) vs. In Gesund (LEFIT clean remake) vs. Ersparnis
+const PRODUCT_CALORIE_MAP: Record<string, { originalCalories: string; cleanCalories: string; calorieSavings: string }> = {
+  bueno: {
+    originalCalories: '572 kcal / 100g (ca. 122 kcal pro Riegel)',
+    cleanCalories: '185 kcal / Riegel (100% Haselnuss-Power)',
+    calorieSavings: '-68% Zucker & reine gesunde Fette statt Palmöl',
+  },
+  kinder_riegel: {
+    originalCalories: '566 kcal / 100g (über 53% reiner Zucker)',
+    cleanCalories: '160 kcal / Riegel (Cashew-Vanille & Edelkakao)',
+    calorieSavings: '-65% Zucker, 0g Palmfett',
+  },
+  kinder_country: {
+    originalCalories: '561 kcal / 100g (Cerealien in Palmöl)',
+    cleanCalories: '175 kcal / Riegel (Bio-Quinoa & Buchweizen)',
+    calorieSavings: '-60% Zucker, 3x mehr Ballaststoffe',
+  },
+  duplo: {
+    originalCalories: '555 kcal / 100g (über 50% Zucker)',
+    cleanCalories: '155 kcal / Riegel (Dunkler Haselnuss-Nougat)',
+    calorieSavings: '-75% Zucker, kein Palmöl',
+  },
+  hanuta: {
+    originalCalories: '542 kcal / 100g (über 30% Palmöl)',
+    cleanCalories: '180 kcal / Stück (100% Haselnüsse & Datteln)',
+    calorieSavings: '-65% Zucker, reich an Magnesium',
+  },
+  nutella: {
+    originalCalories: '539 kcal / 100g (55% Zucker, 30% Palmöl)',
+    cleanCalories: '92 kcal / EL (80% reine Haselnuss)',
+    calorieSavings: 'Null Industriezucker, 6x mehr Haselnuss',
+  },
+  snickers: {
+    originalCalories: '488 kcal / 100g (ca. 280 kcal pro Riegel)',
+    cleanCalories: '210 kcal / Riegel (Dattel-Karamell & Erdnuss)',
+    calorieSavings: '-70 kcal & 12g Protein statt Glukosesirup',
+  },
+  twix: {
+    originalCalories: '495 kcal / 100g (Weißmehl in Palmöl)',
+    cleanCalories: '190 kcal / Riegel (Hafer-Mandel & Dattel)',
+    calorieSavings: '-60% Zucker, 100% vollwertig',
+  },
+  bounty: {
+    originalCalories: '487 kcal / 100g (30g Glukosesirup)',
+    cleanCalories: '165 kcal / Riegel (Bio-Kokos & MCT-Fette)',
+    calorieSavings: '-65% Zucker, reine MCT-Fettsäuren',
+  },
+  mars: {
+    originalCalories: '450 kcal / 100g (60% Invertzuckersirup)',
+    cleanCalories: '195 kcal / Riegel (Protein-Nougat & Dattel)',
+    calorieSavings: '-70% Zucker, 11g Protein',
+  },
+  milka: {
+    originalCalories: '530 kcal / 100g (nur 30% Kakao, 60% Zucker)',
+    cleanCalories: '135 kcal / 25g (Bio-Kakaobutter & Edelkakao)',
+    calorieSavings: '-65% Zucker, reich an Polyphenolen',
+  },
+  oreo: {
+    originalCalories: '474 kcal / 100g (Palmfett-Puderzucker)',
+    cleanCalories: '145 kcal / Keks (Cashew-Vanille & Hafer)',
+    calorieSavings: '-60% Zucker, gesunde pflanzliche Fette',
+  },
+  chips_paprika: {
+    originalCalories: '535 kcal / 100g (in Palmöl frittiert)',
+    cleanCalories: '160 kcal / Portion (ofengeröstete Kichererbsen)',
+    calorieSavings: '-375 kcal (-70% Fett, kein Acrylamid)',
+  },
+  chips_sour_cream: {
+    originalCalories: '530 kcal / 100g (mit Glutamat & Aromen)',
+    cleanCalories: '120 kcal / Portion (Zucchini & Kokos-Kräuterdip)',
+    calorieSavings: '-410 kcal (-77% Kalorien, kein Glutamat)',
+  },
+  pizza: {
+    originalCalories: '850 - 950 kcal (Steinofenpizza mit Schmelzkäse)',
+    cleanCalories: '340 kcal / Portion (Vollkorn-Dinkel mit Magerquark-Boden)',
+    calorieSavings: '-550 kcal (-60% Kalorien, 24g Protein!)',
+  },
+  burger: {
+    originalCalories: '600 - 750 kcal (Fast-Food Burger mit Schmelzkäse)',
+    cleanCalories: '380 kcal / Burger (Bio-Weiderind, Dinkel-Bun & Avocado)',
+    calorieSavings: '-320 kcal & massive 34g Muskel-Eiweiß',
+  },
+  chips_pringles: {
+    originalCalories: '522 kcal / 100g (Kartoffelpulver in Palmöl)',
+    cleanCalories: '135 kcal / Portion (Ofen-Süßkartoffel mit Meersalz)',
+    calorieSavings: '-387 kcal (-74% Fett, null Palmfett)',
+  },
+  coca_cola: {
+    originalCalories: '140 kcal / 330ml Dose (35g Zucker / 10 Würfelzucker)',
+    cleanCalories: '18 kcal / Glas (Bio-Hibiskus & Limetten-Infusion)',
+    calorieSavings: '-122 kcal (-87% Kalorien, 0g Industriezucker)',
+  },
+  haribo: {
+    originalCalories: '343 kcal / 100g (80% Glukosesirup & Zucker)',
+    cleanCalories: '45 kcal / Portion (100% Bio-Muttersaft & Agar-Agar)',
+    calorieSavings: '-298 kcal (-86% Kalorien, 100% Frucht-Vitamine)',
+  },
+  doener: {
+    originalCalories: '750 - 900 kcal (Imbiss-Döner mit Mayonnaise-Sauce)',
+    cleanCalories: '410 kcal / Döner (Hähnchenbrust & Kräuterquark)',
+    calorieSavings: '-450 kcal (-50% Kalorien, 42g Protein)',
+  },
+  apfel: {
+    originalCalories: 'ca. 95 kcal (1 normaler Bio-Apfel)',
+    cleanCalories: '165 kcal (Warmer Zimt-Apfel mit gerösteten Mandeln)',
+    calorieSavings: '+70 kcal gesunde Fette & Pektin für Blutzucker-Balance',
+  },
+};
 
 // Distinct products catalog, explicitly differentiating items from the SAME brand (Ferrero, Mars, Mondelez, etc.)
 const KNOWN_LEFIT_PRODUCTS: Record<string, any> = {
@@ -791,212 +940,782 @@ const KNOWN_LEFIT_PRODUCTS: Record<string, any> = {
   }
 };
 
-// API Endpoint to recognize product and produce LEFIT health check & clean recipe
-app.post('/api/scan-product', async (req, res) => {
+// ==========================================
+// 1. AUTHENTICATION ENDPOINTS (STRICT PASSWORD)
+// ==========================================
+app.post('/api/auth/check-account', (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email : '';
+  if (!email.includes('@')) {
+    return res.json({ exists: false });
+  }
+  return res.json(checkAccountExists(email));
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { email, password, confirmPassword, name, provider, avatar } = req.body || {};
+  const validProvider = provider === 'google' || provider === 'apple' || provider === 'email' ? provider : 'email';
+
+  const result = authenticateAccount({
+    email: String(email || ''),
+    password: String(password || ''),
+    confirmPassword: typeof confirmPassword === 'string' ? confirmPassword : undefined,
+    name: typeof name === 'string' ? name : undefined,
+    provider: validProvider,
+    avatar: typeof avatar === 'string' ? avatar : undefined,
+  });
+
+  if (result.ok === false) {
+    return res.status(result.status).json({ success: false, error: result.error });
+  }
+
+  return res.json({
+    success: true,
+    token: result.token,
+    user: result.user,
+    isNewAccount: result.isNewAccount,
+  });
+});
+
+app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
+  const acc = req.account!;
+  return res.json({
+    success: true,
+    user: toPublicUser(acc),
+  });
+});
+
+// ==========================================
+// 2. SAVED RECIPES ENDPOINTS
+// ==========================================
+app.get('/api/recipes', requireAuth, (req: AuthenticatedRequest, res) => {
+  const acc = req.account!;
+  return res.json({
+    success: true,
+    savedRecipes: acc.savedRecipes || [],
+  });
+});
+
+app.post('/api/recipes', requireAuth, (req: AuthenticatedRequest, res) => {
+  const product = req.body?.product;
+  if (!product || typeof product.productName !== 'string' || !product.cleanRecipe) {
+    return res.status(400).json({ success: false, error: 'Ungültige Rezeptdaten.' });
+  }
+
+  const result = saveUserRecipe(req.account!.email, product);
+  return res.json({
+    success: true,
+    savedRecipes: result.savedRecipes,
+  });
+});
+
+app.post('/api/recipes/sync', requireAuth, (req: AuthenticatedRequest, res) => {
+  const localRecipes = Array.isArray(req.body?.localRecipes) ? req.body.localRecipes : [];
+  const result = syncUserRecipes(req.account!.email, localRecipes);
+  return res.json({
+    success: true,
+    savedRecipes: result.savedRecipes,
+  });
+});
+
+app.delete('/api/recipes/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const recipeId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const result = deleteUserRecipe(req.account!.email, String(recipeId || ''));
+  return res.json({
+    success: true,
+    savedRecipes: result.savedRecipes,
+  });
+});
+
+app.post('/api/recipes/reset', requireAuth, (req: AuthenticatedRequest, res) => {
+  const result = resetUserRecipes(req.account!.email);
+  return res.json({
+    success: true,
+    savedRecipes: result.savedRecipes,
+  });
+});
+
+// ==========================================
+// 3. UNIVERSAL FOOD SCANNER (UNLIMITED FOR AUTHENTICATED USERS)
+// ==========================================
+app.post('/api/scan-product', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { imageBase64, sampleId, productNameHint } = req.body;
+    const { imageBase64, sampleId, productNameHint, autoScan } = req.body || {};
+    const isAutoScan = Boolean(autoScan);
 
     const apiKey = process.env.GEMINI_API_KEY;
 
     // 1. Direct key match in curated catalog if sampleId is explicitly provided
     if (sampleId && KNOWN_LEFIT_PRODUCTS[sampleId]) {
       const item = KNOWN_LEFIT_PRODUCTS[sampleId];
+      const calInfo = PRODUCT_CALORIE_MAP[sampleId] || {
+        originalCalories: '550 kcal / 100g (Normal / Vorher)',
+        cleanCalories: item.cleanRecipe?.macros?.calories || '180 kcal',
+        calorieSavings: '-60% Zucker & 0g Palmfett',
+      };
       return res.json({
         success: true,
+        recognized: true,
         data: {
           ...item,
+          originalCalories: calInfo.originalCalories,
+          cleanCalories: calInfo.cleanCalories,
+          calorieSavings: calInfo.calorieSavings,
+          cleanRecipe: {
+            ...item.cleanRecipe,
+            originalCalories: calInfo.originalCalories,
+            cleanCalories: calInfo.cleanCalories,
+            calorieSavings: calInfo.calorieSavings,
+          },
           shortSummary: `${item.healthCheck} Portionsempfehlung: ${item.portionTip}`,
         },
         source: 'curated'
       });
     }
 
-    // 2. PRIMARY: Gemini 3.8 Flash universal AI recognition for ANY product or food in the world!
+    // 2. PRIMARY: Gemini universal AI recognition for ANY product or food in the world!
     if (apiKey && apiKey !== 'MY_GEMINI_API_KEY') {
-      try {
-        const ai = new GoogleGenAI({
-          apiKey,
-          httpOptions: {
-            headers: {
-              'User-Agent': 'aistudio-build',
-            },
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
           },
-        });
+        },
+      });
 
-        const promptText = `
+      const promptText = `
 Du bist die weltweite, universelle Lebensmittel- und Verpackungs-Erkennungs-KI für LEFIT (gegründet von Fitness-Experte Leon: 100% natürlich, ohne künstlichen Mist).
-Analysiere dieses Bild oder die Eingabe: "${productNameHint || 'gescanntes Produkt / Essen'}" mit 100%iger Präzision. KEINE FEHLER!
+Deine Mission: Erkenne WIRKLICH ALLES an Produkten und Essen auf der ganzen Welt und schreibe GENAU DAS PASSENDE gesunde Rezept dazu – genaustens passend, ohne jeden Fehler!
 
-STRIKTE ANWEISUNGEN:
+Analysiere dieses Bild oder den Text-Hinweis: "${productNameHint || 'gescanntes Produkt / Essen'}".
+
+STRIKTE ANWEISUNGEN FÜR DIE ERKENNUNG:
 1. Erkenne haargenau das Produkt oder Essen:
-   - Bei verpackten Produkten aller Art (Chips, Süßigkeiten, Schokolade, Getränke, Joghurt, Tiefkühlkost, Fertiggerichte, Müslis, Riegel aller Marken weltweit wie Pringles, Doritos, Kinder Bueno, Kinder Country, Duplo, Hanuta, Oreo, Milka, Twix, Snickers, Haribo, Coca-Cola, Red Bull, Nutella, etc.):
-     Lies den Text und das Logo auf der Verpackung und erkenne die EXAKTE Marke und den EXAKTEN Produktnamen!
-   - Bei frischem, unverpacktem oder gekochtem Essen (Pizza, Cheeseburger, Döner Kebab, Spaghetti, Sushi, Salat, Curry, Apfel, Banane, Lachs mit Reis, Pommes, etc.):
-     Erkenne das genaue Gericht bzw. Essen!
-   - NIEMALS fälschlicherweise "Kinderriegel" ausgeben, wenn ein anderes Produkt oder Essen zu sehen ist!
+   - Jedes verpackte Produkt aller Marken weltweit (z. B. Pringles Sour Cream, Doritos Nacho, Kinder Bueno, Kinder Country, Duplo, Hanuta, Oreo, Milka Alpenmilch, Twix, Snickers, Haribo Goldbären, Coca-Cola, Red Bull, Nutella, Ritter Sport, Dr. Oetker Ristorante, Magnum Mandel, etc.):
+     Lies den Text, das Markenlogo und die Packungsmerkmale. Gib die EXAKTE Marke und den EXAKTEN Produktnamen an!
+   - Jedes zubereitete Essen, Fast-Food oder Restaurant-Gericht (z. B. Pizza Margherita, Pizza Salami, Cheeseburger, Döner Kebab, Spaghetti Carbonara, Spaghetti Bolognese, Sushi Maki/Nigiri, Burrito, Rotes Thai-Curry, Pommes Frites, Falafel-Wrap, etc.):
+     Erkenne das genaue Gericht, die Beilagen und die Art der Zubereitung!
+   - Jedes unverarbeitete Naturprodukt (z. B. Apfel, Banane, Lachsfilet mit Brokkoli, Haferflocken, etc.).
+   - NIEMALS fälschlicherweise "Kinderriegel" ausgeben, wenn etwas anderes zu sehen ist!
 
-2. Erstelle das Ergebnis exakt als JSON mit diesen Feldern:
-   - "productName": Der exakte Name des Essens / Produkts (z. B. "Pringles Sour Cream & Onion", "Pizza Margherita", "Cheeseburger", "Kinder Bueno", "Apfel", etc.).
-   - "brand": Die Marke (z. B. "Kellogg's", "Ferrero", "Mars", "Dr. Oetker", etc.) oder "Frisch zubereitet" / "Naturprodukt".
-   - "category": Spezifische Kategorie (z. B. "Knusprige Kartoffelchips", "Italienische Steinofenpizza", "Rindfleisch-Burger", etc.).
-   - "shortSummary": Ganz kurz (2 bis maximal 3 Sätze) komplett in EINEM kurzen Text: Leons persönliche Erfahrung/Gesundheitscheck zu den Inhaltsstoffen UND direkt darin integriert die konkrete Portionsempfehlung für den Alltag!
-   - "healthCheck": 1-2 kurze Sätze zu den Zutaten und der gesundheitlichen Wirkung.
+2. GENAUSTENS PASSENDES GESUNDES REZEPT (100% maßgeschneidertes Clean Copycat):
+   - Schreibe ein gesundes, natürliches LEFIT-Rezept, das EXAKT dieses erkannte Produkt/Essen in gesund nachbaut!
+   - Es MUSS exakt dieselbe Geschmacksrichtung, Textur und das Mundgefühl des Originals treffen:
+     * Bei Knabberzeug/Chips: Knusprig geröstete Ofen-Chips mit natürlichen Gewürzen statt Palmöl & Glutamat.
+     * Bei Schokolade/Riegeln: Echter Edelkakao, Nussmuse & Dattelsüße statt Glukosesirup & billigem Pflanzenfett.
+     * Bei Pizza/Burger/Döner: Vollkorn-Dinkelboden, mageres Weiderind/Hähnchen, frischer Kräuterquark & Bio-Mozzarella statt Schmelzkäse und Weißmehl.
+     * Bei Pasta/Saucen: Dinkel- oder Hülsenfruchtpasta, natürliche Ei-Käse-Emulsion oder Tomatensugo statt Industriesahne.
+   - Zutaten: 5 bis 8 Zutaten mit EXAKTEN Mengenangaben (Gramm, EL, TL).
+   - Zubereitung: 4 bis 6 präzise, praxiserprobte Schritte.
+   - 100% Natürlich: 0g Palmfett, 0g raffinierter Industriezucker, 0g chemische Geschmacksverstärker!
+
+3. EXAKTER KALORIEN-VERGLEICH:
+   - "originalCalories": Reale Kalorien des typischen kommerziellen Produkts / Fast-Foods (z. B. "850 kcal (Steinofenpizza 350g)" oder "572 kcal / 100g (ca. 122 kcal pro Riegel)").
+   - "cleanCalories": Reale Kalorien der gesunden LEFIT-Nachbildung (z. B. "340 kcal / Portion" oder "185 kcal / Riegel").
+   - "calorieSavings": Konkrete Kalorienersparnis und Clean-Vorteil (z. B. "-510 kcal (-60% Kalorien, 24g Protein, 0g Palmöl)").
+
+4. FORMATE & LEONS VERDICT:
+   - "productName": Exakter Produkt- oder Gerichtsname.
+   - "brand": Marke oder "Frisch zubereitet" / "Naturprodukt".
+   - "category": Spezifische Lebensmittelkategorie.
+   - "shortSummary": 2-3 kurze Sätze in reinem Weiß: Warum das normale Produkt/Essen im Körper Heißhunger oder Trägheit auslöst UND direkt die konkrete Portionsempfehlung und wie die gesunde Alternative dich optimal sättigt.
+   - "healthCheck": 1-2 Sätze zur gesundheitlichen Wirkung der Zutaten.
    - "portionTip": Die konkrete Portionsmenge.
-   - "cleanRecipe": Ein 100% natürliches, gesundes LEFIT-Rezept zum Selbermachen als cleane Alternative ohne künstlichen Mist:
-     - "title", "subtitle", "prepTime", "difficulty", "servings", "macros" (calories, protein, carbs, fat, fiber), "comparison", "ingredients" (5-8 natürliche Zutaten mit Mengenangaben), "instructions" (4-6 Schritte), "leonsVerdict".
+   - "cleanRecipe": Das passende gesunde Remake mit title, subtitle, prepTime, difficulty, servings, macros, originalCalories, cleanCalories, calorieSavings, comparison, ingredients, instructions, leonsVerdict.
+   - "recognized": Setze "recognized" auf false, wenn auf dem Kamerabild KEIN klares Lebensmittel, Gericht, Getränk oder keine Lebensmittelverpackung erkennbar ist (z. B. nur Wand, Tisch, Gesicht, dunkler/verschwommener Hintergrund). Setze "recognized" nur auf true, wenn wirklich ein konkretes Produkt oder Essen eindeutig erkannt wurde!
 `;
 
-        const parts: any[] = [];
-        if (imageBase64) {
-          const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
-          parts.push({
-            inlineData: {
-              mimeType: 'image/jpeg',
-              data: cleanBase64,
-            },
-          });
-        }
-        parts.push({ text: promptText });
+      const parts: any[] = [];
+      if (imageBase64) {
+        const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+        parts.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: cleanBase64,
+          },
+        });
+      }
+      parts.push({ text: promptText });
 
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini API timeout')), 25000)
-        );
-
-        const response: any = await Promise.race([
-          ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: { parts },
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  productName: { type: Type.STRING },
-                  brand: { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  shortSummary: { type: Type.STRING },
-                  healthCheck: { type: Type.STRING },
-                  portionTip: { type: Type.STRING },
-                  cleanRecipe: {
-                    type: Type.OBJECT,
-                    properties: {
-                      title: { type: Type.STRING },
-                      subtitle: { type: Type.STRING },
-                      prepTime: { type: Type.STRING },
-                      difficulty: { type: Type.STRING },
-                      servings: { type: Type.STRING },
-                      macros: {
-                        type: Type.OBJECT,
-                        properties: {
-                          calories: { type: Type.STRING },
-                          protein: { type: Type.STRING },
-                          carbs: { type: Type.STRING },
-                          fat: { type: Type.STRING },
-                          fiber: { type: Type.STRING },
-                        },
-                        required: ['calories', 'protein', 'carbs', 'fat'],
-                      },
-                      comparison: { type: Type.STRING },
-                      ingredients: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING },
-                      },
-                      instructions: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING },
-                      },
-                      leonsVerdict: { type: Type.STRING },
-                    },
-                    required: ['title', 'subtitle', 'prepTime', 'servings', 'ingredients', 'instructions', 'leonsVerdict'],
+      const schemaConfig = {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            recognized: { type: Type.BOOLEAN },
+            productName: { type: Type.STRING },
+            brand: { type: Type.STRING },
+            category: { type: Type.STRING },
+            originalCalories: { type: Type.STRING },
+            cleanCalories: { type: Type.STRING },
+            calorieSavings: { type: Type.STRING },
+            shortSummary: { type: Type.STRING },
+            healthCheck: { type: Type.STRING },
+            portionTip: { type: Type.STRING },
+            cleanRecipe: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                subtitle: { type: Type.STRING },
+                prepTime: { type: Type.STRING },
+                difficulty: { type: Type.STRING },
+                servings: { type: Type.STRING },
+                originalCalories: { type: Type.STRING },
+                cleanCalories: { type: Type.STRING },
+                calorieSavings: { type: Type.STRING },
+                macros: {
+                  type: Type.OBJECT,
+                  properties: {
+                    calories: { type: Type.STRING },
+                    protein: { type: Type.STRING },
+                    carbs: { type: Type.STRING },
+                    fat: { type: Type.STRING },
+                    fiber: { type: Type.STRING },
                   },
+                  required: ['calories', 'protein', 'carbs', 'fat'],
                 },
-                required: ['productName', 'brand', 'category', 'shortSummary', 'healthCheck', 'portionTip', 'cleanRecipe'],
+                comparison: { type: Type.STRING },
+                ingredients: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                instructions: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                leonsVerdict: { type: Type.STRING },
               },
+              required: ['title', 'subtitle', 'prepTime', 'servings', 'ingredients', 'instructions', 'leonsVerdict'],
             },
-          }),
-          timeoutPromise,
-        ]);
+          },
+          required: ['recognized', 'productName', 'brand', 'category', 'shortSummary', 'healthCheck', 'portionTip', 'cleanRecipe'],
+        },
+      };
 
-        const textOutput = response.text;
-        if (textOutput) {
-          const parsed = JSON.parse(textOutput);
-          if (parsed.productName) {
-            return res.json({
-              success: true,
-              data: parsed,
-              source: 'gemini',
-            });
+      // Try primary fast model with robust 12s timeout
+      const candidateModels = ['gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+      for (const modelName of candidateModels) {
+        try {
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Timeout on model ${modelName}`)), 12000)
+          );
+
+          const response: any = await Promise.race([
+            ai.models.generateContent({
+              model: modelName,
+              contents: { parts },
+              config: schemaConfig,
+            }),
+            timeoutPromise,
+          ]);
+
+          const textOutput = response.text;
+          if (textOutput) {
+            const parsed = JSON.parse(textOutput);
+            // Live auto-scan protection: ignore blank/unclear frames
+            if (isAutoScan && parsed.recognized === false) {
+              return res.json({
+                success: false,
+                recognized: false,
+              });
+            }
+            if (parsed.productName && parsed.cleanRecipe && parsed.recognized !== false) {
+              // Ensure calorie comparison is linked
+              if (!parsed.cleanRecipe.originalCalories && parsed.originalCalories) {
+                parsed.cleanRecipe.originalCalories = parsed.originalCalories;
+              }
+              if (!parsed.cleanRecipe.cleanCalories && parsed.cleanCalories) {
+                parsed.cleanRecipe.cleanCalories = parsed.cleanCalories;
+              }
+              if (!parsed.cleanRecipe.calorieSavings && parsed.calorieSavings) {
+                parsed.cleanRecipe.calorieSavings = parsed.calorieSavings;
+              }
+              return res.json({
+                success: true,
+                recognized: true,
+                data: parsed,
+                source: modelName,
+              });
+            }
           }
+        } catch (modelError: any) {
+          console.warn(`Model ${modelName} issue:`, modelError?.message || modelError);
+          // Loop will try next candidate model if available
         }
-      } catch (geminiError) {
-        console.warn('Gemini recognition issue:', geminiError);
       }
     }
 
-    // 3. Fallback matching if hint matches catalog
-    if (productNameHint) {
-      const lower = productNameHint.toLowerCase();
+    // 3. Smart Culinary Recognition Engine for ANY food/product in the world!
+    const query = (productNameHint || sampleId || '').trim();
+    if (query) {
+      const lower = query.toLowerCase();
+
+      // Check known catalog first
       for (const [key, prod] of Object.entries(KNOWN_LEFIT_PRODUCTS)) {
-        if (lower.includes(prod.productName.toLowerCase()) || prod.productName.toLowerCase().includes(lower)) {
+        if (lower.includes(prod.productName.toLowerCase()) || prod.productName.toLowerCase().includes(lower) || lower.includes(key)) {
+          const calInfo = PRODUCT_CALORIE_MAP[key] || {
+            originalCalories: '550 kcal / 100g (Normal / Vorher)',
+            cleanCalories: prod.cleanRecipe?.macros?.calories || '180 kcal',
+            calorieSavings: '-60% Zucker & 0g Palmfett',
+          };
           return res.json({
             success: true,
+            recognized: true,
             data: {
               ...prod,
-              shortSummary: `${prod.healthCheck} Portionsempfehlung: ${prod.portionTip}`,
+              originalCalories: calInfo.originalCalories,
+              cleanCalories: calInfo.cleanCalories,
+              calorieSavings: calInfo.calorieSavings,
+              cleanRecipe: {
+                ...prod.cleanRecipe,
+                originalCalories: calInfo.originalCalories,
+                cleanCalories: calInfo.cleanCalories,
+                calorieSavings: calInfo.calorieSavings,
+              },
+              shortSummary: prod.shortSummary || `${prod.healthCheck} Portionsempfehlung: ${prod.portionTip}`,
             },
-            source: 'curated-search',
+            source: 'smart-catalog',
           });
         }
       }
 
-      // Generate dynamic response for the specific food name requested (NOT Kinder Bueno!)
-      const customFoodName = productNameHint.trim();
-      return res.json({
-        success: true,
-        data: {
-          productName: customFoodName,
-          brand: 'Erkanntes Lebensmittel',
-          category: 'Erkanntes Essen / Snack',
-          shortSummary: `Enthält meist industriell verarbeitete Fette und einfachen Zucker, die deine Energie schnell abstürzen lassen. Meine Empfehlung: Höchstens 1 kleine Portion bewusst genießen oder direkt die cleane LEFIT-Alternative zubereiten!`,
-          healthCheck: `Industriell verarbeitete Zutaten können den Blutzucker belasten.`,
-          portionTip: `Maximal 1 kleine Portion als bewusster Genuss.`,
+      // Universal matching tailored to the exact category of the scanned food
+      let matchedData: any;
+
+      if (lower.includes('pizza') || lower.includes('flammkuchen') || lower.includes('calzone')) {
+        matchedData = {
+          productName: query.includes('Pizza') ? query : `Pizza ${query}`,
+          brand: 'Klassische Pizzeria / Tiefkühlmarke',
+          category: 'Steinofenpizza mit Käse & Teigboden',
+          originalCalories: '850 - 950 kcal (ganze Steinofenpizza mit Schmelzkäse)',
+          cleanCalories: '340 kcal / Portion (Vollkorn-Dinkel mit Magerquark & Mozzarella)',
+          calorieSavings: '-550 kcal (-60% Kalorien, 24g Protein!)',
+          shortSummary: 'Weißmehl und fettiger Schmelzkäse treiben den Blutzucker schnell nach oben und machen schlapp. Portionsempfehlung: Maximal 2 Stücke nach dem Training als Carbs-Refeed, oder back dir die cleane LEFIT-Dinkelpizza!',
+          healthCheck: 'Auszugsmehl und minderwertiger Käse belasten die Verdauung und liefern kaum Mikronährstoffe.',
+          portionTip: 'Maximal 2 Stücke (ca. 180g) als gezielter Carb-Refeed.',
           cleanRecipe: {
-            title: `LEFIT Clean ${customFoodName}`,
-            subtitle: '100% Natürlich • Ohne künstlichen Mist',
+            title: `LEFIT Clean ${query}`,
+            subtitle: '100% Natürlich • Vollkorn-Dinkelboden • Bio-Mozzarella & Tomatensugo',
+            prepTime: '20 Min. (+ 15 Min. Backzeit)',
+            difficulty: 'Einfach',
+            servings: '2 Portionen',
+            originalCalories: '850 - 950 kcal (ganze Steinofenpizza mit Schmelzkäse)',
+            cleanCalories: '340 kcal / Portion',
+            calorieSavings: '-550 kcal (-60% Kalorien, 24g Protein!)',
+            macros: { calories: '350 kcal / Portion', protein: '25g', carbs: '38g', fat: '9.5g', fiber: '7g' },
+            comparison: '3x mehr Ballaststoffe, doppelt so viel Protein und null künstliche Käsezusätze',
+            ingredients: [
+              '150g Vollkorn-Dinkelmehl',
+              '100g Magerquark oder Seidentofu für knusprigen Proteinboden',
+              '1 TL Backpulver & 1 Prise Meersalz',
+              '80ml lauwarmes Wasser + 1 TL Olivenöl',
+              '100g passierte Bio-Tomaten mit Oregano & Knoblauch',
+              '100g fettreduzierter Bio-Mozzarella',
+              'Frisches Basilikum'
+            ],
+            instructions: [
+              'Dinkelmehl, Quark, Backpulver und Wasser zu einem Teig kneten und dünn ausrollen.',
+              'Mit Tomatensauce bestreichen und mit Mozzarella belegen.',
+              'Bei 220°C Ober-/Unterhitze 12-15 Minuten goldbraun und kross backen.',
+              'Mit frischem Basilikum toppen und heiß genießen!'
+            ],
+            leonsVerdict: 'Knusprig, saftig und vollgepackt mit Muskelaufbau-Protein!'
+          }
+        };
+      } else if (lower.includes('burger') || lower.includes('whopper') || lower.includes('big mac')) {
+        matchedData = {
+          productName: query,
+          brand: 'Fast Food Kette',
+          category: 'Rindfleisch-Burger mit Weizenbrötchen',
+          originalCalories: '600 - 750 kcal (Fast-Food Burger mit Schmelzkäse)',
+          cleanCalories: '380 kcal / Burger (Bio-Weiderind, Dinkel-Bun & Avocado)',
+          calorieSavings: '-320 kcal & massive 34g Muskel-Eiweiß',
+          shortSummary: 'Industrielle Buns bestehen aus Zucker und gehärteten Fetten, die sofort Heißhunger triggern. Portionsempfehlung: Maximal 1 kleiner Burger ohne Pommes oder genieße den echten LEFIT Weiderind-Burger!',
+          healthCheck: 'Stark verarbeitete Buns und Fertigsaucen treiben die Insulinkurve in die Höhe.',
+          portionTip: 'Maximal 1 kleiner Burger (ca. 130g) ohne gezuckerte Saucen.',
+          cleanRecipe: {
+            title: `LEFIT Clean ${query}`,
+            subtitle: '100% Natürlich • 100% Weiderind • Dinkel-Bun & Avocado',
+            prepTime: '20 Min.',
+            difficulty: 'Einfach',
+            servings: '2 Burger',
+            originalCalories: '600 - 750 kcal (Fast-Food Burger mit Schmelzkäse)',
+            cleanCalories: '380 kcal / Burger',
+            calorieSavings: '-320 kcal & massive 34g Muskel-Eiweiß',
+            macros: { calories: '390 kcal / Burger', protein: '35g', carbs: '28g', fat: '14g', fiber: '6g' },
+            comparison: 'Reines Weiderind, gesunde Avocado-Fette und vollwertiges Dinkel-Bun',
+            ingredients: [
+              '250g mageres Bio-Rinderhack (oder Linsen-Hafer-Masse)',
+              '2 Vollkorn-Dinkel-Brötchen',
+              '1/2 reife Avocado mit Limettensaft zerdrückt',
+              '40g echter Ziegen- oder Goudakäse',
+              'Tomaten, rote Zwiebeln und Rucola'
+            ],
+            instructions: [
+              'Hackfleisch mit Meersalz und Pfeffer würzen und zu flachen Patties formen.',
+              'In der heißen Pfanne von beiden Seiten 2-3 Minuten kross anbraten.',
+              'Käse kurz darauf schmelzen lassen und im gerösteten Dinkel-Bun mit Avocado anrichten.'
+            ],
+            leonsVerdict: '35g reines Eiweiß und saubere Fette – der perfekte Fitness-Genuss!'
+          }
+        };
+      } else if (lower.includes('döner') || lower.includes('kebab') || lower.includes('shawarma') || lower.includes('gyros')) {
+        matchedData = {
+          productName: query,
+          brand: 'Streetfood / Imbiss',
+          category: 'Fladenbrot mit Fleisch & Saucen',
+          originalCalories: '750 - 900 kcal (Imbiss-Döner mit Mayonnaise-Sauce)',
+          cleanCalories: '410 kcal / Döner (Hähnchenbrust, Vollkorn-Dinkel & Kräuterquark)',
+          calorieSavings: '-450 kcal (-50% Kalorien, 42g Protein, 70% weniger Fett)',
+          shortSummary: 'Oft voll mit gestrecktem Hackfleisch-Spieß und fettreicher Mayonnaise. Portionsempfehlung: Mit Hähnchenbrust und Knoblauch-Kräuterquark bestellen oder den LEFIT-Döner selbst zubereiten!',
+          healthCheck: 'Minderwertige Fleischspieße enthalten oft versteckte Fette und Geschmacksverstärker.',
+          portionTip: 'Maximal 1 Portion mit viel frischem Salat und Joghurt-Kräutersauce.',
+          cleanRecipe: {
+            title: `LEFIT Clean ${query}`,
+            subtitle: '100% Natürlich • Saftige Hähnchenbrust • Dinkel-Pita & Kräuterquark',
+            prepTime: '20 Min.',
+            difficulty: 'Einfach',
+            servings: '2 Portionen',
+            originalCalories: '750 - 900 kcal (Imbiss-Döner mit Mayonnaise-Sauce)',
+            cleanCalories: '410 kcal / Döner',
+            calorieSavings: '-450 kcal (-50% Kalorien, 42g Protein)',
+            macros: { calories: '410 kcal / Portion', protein: '42g', carbs: '36g', fat: '9g', fiber: '7.5g' },
+            comparison: '42g hochwertiges Protein, 70% weniger Fett als Imbiss-Döner und ohne Zusätze',
+            ingredients: [
+              '300g Hähnchenbrustfilet (in feine Streifen geschnitten)',
+              'Kreuzkümmel, Paprikapulver, Oregano, Knoblauchpulver & Meersalz',
+              '2 Vollkorn-Dinkel-Pita oder Fladenbrote',
+              '150g Magerquark oder 0% Joghurt mit Knoblauch & frischen Kräutern',
+              'Rotkohl, Tomaten, Gurken und Eisbergsalat'
+            ],
+            instructions: [
+              'Hähnchenstreifen würzen und in der Pfanne scharf anbraten.',
+              'Dinkel-Pita kross anrösten und mit Knoblauch-Kräuterquark bestreichen.',
+              'Mit knackigem Salat und dem heißen Fleisch prall füllen.'
+            ],
+            leonsVerdict: 'Schmeckt unvergleichlich frisch und liefert maximale Muskelbausteine!'
+          }
+        };
+      } else if (lower.includes('chips') || lower.includes('nachos') || lower.includes('doritos') || lower.includes('pringles')) {
+        matchedData = {
+          productName: query,
+          brand: 'Snack-Hersteller',
+          category: 'Frittierte Knuspersnacks',
+          originalCalories: '530 - 540 kcal / 100g (in Palmöl frittiert mit Geschmacksverstärkern)',
+          cleanCalories: '135 kcal / Portion (Ofen-Süßkartoffel/Kichererbsen mit Olivenöl)',
+          calorieSavings: '-395 kcal (-70% Fett, null Palmfett)',
+          shortSummary: 'Frittiert in minderwertigem Palmfett mit künstlichen Aromen, die ständiges Weiteressen erzwingen. Portionsempfehlung: Maximal eine kleine Handvoll (20g) oder back dir die knusprigen LEFIT Süßkartoffel-Chips!',
+          healthCheck: 'Acrylamid und gehärtete Fette belasten die Gefäße und bremsen den Fettstoffwechsel.',
+          portionTip: 'Maximal 20g als bewusster Notfall-Snack.',
+          cleanRecipe: {
+            title: `LEFIT Clean ${query}`,
+            subtitle: '100% Natürlich • Im Ofen gebacken • Mit nativem Olivenöl & Rosmarin',
+            prepTime: '10 Min. (+ 20 Min. Backzeit)',
+            difficulty: 'Einfach',
+            servings: '2 Portionen',
+            originalCalories: '530 - 540 kcal / 100g (in Palmöl frittiert)',
+            cleanCalories: '135 kcal / Portion',
+            calorieSavings: '-395 kcal (-70% Fett, null Palmfett)',
+            macros: { calories: '135 kcal / Portion', protein: '3g', carbs: '22g', fat: '4.5g', fiber: '4.2g' },
+            comparison: '60% weniger Fett, null Palmfett und reich an natürlichen Vitaminen',
+            ingredients: [
+              '2 große Bio-Süßkartoffeln (hauchdünn gehobelt)',
+              '1 EL natives Olivenöl extra',
+              '1 TL geräuchertes Paprikapulver & Meersalz',
+              'Frischer Rosmarin'
+            ],
+            instructions: [
+              'Süßkartoffelscheiben mit Olivenöl und Gewürzen vermengen.',
+              'Auf Backpapier auslegen und bei 180°C Umluft 18-20 Minuten backen.',
+              'Auf einem Gitter auskühlen lassen für maximalen Crunch!'
+            ],
+            leonsVerdict: 'Extremer Knusper-Kick ganz ohne Völlegefühl oder künstliche Zusätze!'
+          }
+        };
+      } else if (lower.includes('cola') || lower.includes('fanta') || lower.includes('sprite') || lower.includes('energy') || lower.includes('red bull') || lower.includes('monster')) {
+        matchedData = {
+          productName: query,
+          brand: 'Getränkehersteller',
+          category: 'Zuckerhaltiges Erfrischungsgetränk',
+          originalCalories: '140 kcal / 330ml Dose (35g reiner Industriezucker / 10 Würfelzucker)',
+          cleanCalories: '18 kcal / Glas (Bio-Hibiskus & frischer Limettensaft)',
+          calorieSavings: '-122 kcal (-87% Kalorien, 0g Industriezucker)',
+          shortSummary: 'Enthält bis zu 10 Stück Würfelzucker pro Dose oder künstliche Süßstoffe, die das Mikrobiom stören. Portionsempfehlung: Maximal 1 kleines Glas als Ausnahme oder steig auf die belebende LEFIT-Frucht-Infusion um!',
+          healthCheck: 'Flüssiger Zucker umgeht das Sättigungszentrum im Gehirn und führt zu Fettleber.',
+          portionTip: 'Maximal 150ml – am besten durch Wasser mit Bio-Zitrone ersetzen.',
+          cleanRecipe: {
+            title: `LEFIT Sparkling ${query} Alternative`,
+            subtitle: '100% Natürlich • Ohne Zucker • Frischer Antioxidantien-Push',
+            prepTime: '5 Min.',
+            difficulty: 'Sehr einfach',
+            servings: '2 Gläser',
+            originalCalories: '140 kcal / Dose (35g Zucker)',
+            cleanCalories: '18 kcal / Glas',
+            calorieSavings: '-122 kcal (-87% Kalorien, 0g Industriezucker)',
+            macros: { calories: '18 kcal / Glas', protein: '0.5g', carbs: '4g', fat: '0g', fiber: '1g' },
+            comparison: 'Null Industriezucker, natürliche Frische und aktivierende Polyphenole',
+            ingredients: [
+              '2 Beutel Bio-Hibiskus- oder Guaraná-Tee',
+              '400ml kochendes Wasser (stark ziehen lassen und abkühlen)',
+              '200ml eiskaltes Sprudelwasser',
+              'Frischer Limettensaft & Minzblätter',
+              'Eiswürfel'
+            ],
+            instructions: [
+              'Tee stark aufgießen, abkühlen lassen und mit Eiswürfeln ins Glas füllen.',
+              'Mit Sprudelwasser und frischem Limettensaft aufgießen und mit Minze servieren.'
+            ],
+            leonsVerdict: 'Erfrischt unvergleichlich und pusht deinen Fokus ohne Zuckerabsturz!'
+          }
+        };
+      } else if (lower.includes('eis') || lower.includes('ice cream') || lower.includes('magnum') || lower.includes('ben & jerry')) {
+        matchedData = {
+          productName: query,
+          brand: 'Eiscreme-Marke',
+          category: 'Gefrorenes Dessert mit Sahne & Zucker',
+          originalCalories: '320 - 450 kcal / Becher (Sahne, Palmöl & Glukosesirup)',
+          cleanCalories: '160 kcal / Portion (Nicecream aus Bananen & Protein)',
+          calorieSavings: '-250 kcal (-60% Kalorien, null Sahne & 11g Protein)',
+          shortSummary: 'Besteht überwiegend aus Sahne, raffiniertem Zucker und Glukosesirup mit extremer Kaloriendichte. Portionsempfehlung: Höchstens 1 Kugel (50g) oder mach dir in 2 Minuten die cleane LEFIT-Protein-Nicecream!',
+          healthCheck: 'Die Kombination aus Fett und Zucker hemmt die Fettverbrennung für viele Stunden.',
+          portionTip: 'Maximal 1 kleine Kugel (50g) als gelegentlicher Genuss.',
+          cleanRecipe: {
+            title: `LEFIT Clean ${query} Nicecream`,
+            subtitle: '100% Natürlich • Aus gefrorenen Früchten • Cremig & Proteinreich',
+            prepTime: '5 Min.',
+            difficulty: 'Sehr einfach',
+            servings: '2 Portionen',
+            originalCalories: '320 - 450 kcal / Becher',
+            cleanCalories: '160 kcal / Portion',
+            calorieSavings: '-250 kcal (-60% Kalorien, null Sahne)',
+            macros: { calories: '160 kcal / Portion', protein: '11g', carbs: '22g', fat: '3g', fiber: '4g' },
+            comparison: '75% weniger Kalorien, null Sahne und natürliche Cremigkeit aus Bananen',
+            ingredients: [
+              '2 reife Bananen (in Scheiben gefroren)',
+              '30g Schoko- oder Vanille-Proteinpulver',
+              '1 EL reines Kakaopulver oder gefrorene Beeren',
+              '3 EL Mandelmilch ungesüßt'
+            ],
+            instructions: [
+              'Gefrorene Bananenscheiben mit Proteinpulver, Kakao und Mandelmilch in den Mixer geben.',
+              'Auf höchster Stufe 60 Sekunden cremig mixen, bis ein samtiges Soft-Eis entsteht.',
+              'Sofort servieren und ohne Reue genießen!'
+            ],
+            leonsVerdict: 'Schmeckt wie italienisches Gelato – liefert aber Muskelproteine und Kalium!'
+          }
+        };
+      } else if (lower.includes('spaghetti') || lower.includes('pasta') || lower.includes('carbonara') || lower.includes('bolognese') || lower.includes('lasagne') || lower.includes('nudeln')) {
+        matchedData = {
+          productName: query,
+          brand: 'Italienisches Restaurant / Fertiggericht',
+          category: 'Traditionelles Pastagericht',
+          originalCalories: '780 - 920 kcal (Weizenpasta mit Sahne- oder Fettsauce)',
+          cleanCalories: '420 kcal / Portion (Dinkel-Pasta mit Protein-Sauce)',
+          calorieSavings: '-450 kcal (-50% Kalorien, 38g Protein, kein Weißmehl)',
+          shortSummary: 'Weißmehl-Nudeln und schwere Industriesaucen belasten die Leber und sorgen für das typische Nachmittagstief. Portionsempfehlung: 1 Teller nach dem Training als sauberer Glykogenspeicher!',
+          healthCheck: 'Auszugsmehl und gehärtete Fette lassen den Blutzucker unkontrolliert ansteigen.',
+          portionTip: '1 Teller (ca. 350g) ideal als Post-Workout Mahlzeit.',
+          cleanRecipe: {
+            title: `LEFIT Clean High-Protein ${query}`,
+            subtitle: '100% Natürlich • Vollkorn-Dinkel / Kichererbsen-Pasta • Reines Protein',
             prepTime: '15 Min.',
             difficulty: 'Einfach',
             servings: '2 Portionen',
-            macros: {
-              calories: '220 kcal',
-              protein: '14g',
-              carbs: '22g',
-              fat: '8g',
-              fiber: '5g'
-            },
-            comparison: 'Frei von künstlichen Zusatzstoffen und raffiniertem Zucker',
+            originalCalories: '780 - 920 kcal (Standard Pastateller)',
+            cleanCalories: '420 kcal / Portion',
+            calorieSavings: '-450 kcal (-50% Kalorien, 38g Protein)',
+            macros: { calories: '420 kcal / Portion', protein: '38g', carbs: '46g', fat: '8.5g', fiber: '9g' },
+            comparison: 'Doppelter Proteingehalt, 3x mehr Ballaststoffe, 100% saubere Makros',
             ingredients: [
-              '100% natürliche Vollwert-Zutaten',
-              'Bio-Haferflocken oder Mandelmehl',
-              'Hochwertiges Proteinpulver oder Nüsse',
-              'Frische Früchte oder Datteln für natürliche Süße',
-              'Echtes Kakaopulver oder Gewürze'
+              '160g Vollkorn-Dinkel-Spaghetti oder Kichererbsen-Nudeln',
+              '250g mageres Bio-Rinderhack (oder Seidentofu/Linsen)',
+              '1 Dose stückige Bio-Tomaten mit Kräutern & Knoblauch',
+              '1 EL natives Olivenöl extra',
+              '30g echter geriebener Parmesan (Pecorino)',
+              'Frisches Basilikum, Meersalz & schwarzer Pfeffer'
+            ],
+            instructions: [
+              'Dinkel-Pasta in reichlich Salzwasser al dente kochen.',
+              'Hackfleisch in Olivenöl scharf anbraten, Tomaten und Kräuter hinzufügen und 8 Min. köcheln.',
+              'Pasta mit der aromatischen Sauce vermengen und mit frischem Parmesan und Basilikum toppen.'
+            ],
+            leonsVerdict: 'Italienische Leidenschaft ohne die schwere Trägheit danach – versorgt die Muskeln perfekt!'
+          }
+        };
+      } else if (lower.includes('sushi') || lower.includes('ramen') || lower.includes('curry') || lower.includes('pad thai') || lower.includes('wok')) {
+        matchedData = {
+          productName: query,
+          brand: 'Asiatisches Restaurant',
+          category: 'Asiatische Spezialität',
+          originalCalories: '650 - 800 kcal (mit gezuckertem Reis & frittierten Komponenten)',
+          cleanCalories: '390 kcal / Portion (Frischer Lachs/Tofu mit Bio-Reis & Gemüse)',
+          calorieSavings: '-350 kcal (0g künstliche Geschmacksverstärker, reich an Omega-3)',
+          shortSummary: 'Oft mit gezuckertem Klebreis und Glutamat-Saucen zubereitet. Portionsempfehlung: Wähle frischen Lachs, Avocado und reichlich knackiges Wok-Gemüse für maximale Vitalstoffe!',
+          healthCheck: 'Zuckerhaltige Saucen und Frittieröl überdecken die ansonsten gesunden asiatischen Zutaten.',
+          portionTip: '1 Portion (ca. 300g) mit viel Gemüse.',
+          cleanRecipe: {
+            title: `LEFIT Clean ${query} Bowl`,
+            subtitle: '100% Natürlich • Wilder Lachs oder Bio-Tofu • Knackiges Wokgemüse & Ingwer',
+            prepTime: '20 Min.',
+            difficulty: 'Einfach',
+            servings: '2 Portionen',
+            originalCalories: '650 - 800 kcal',
+            cleanCalories: '390 kcal / Portion',
+            calorieSavings: '-350 kcal (reich an Omega-3 & Antioxidantien)',
+            macros: { calories: '390 kcal / Portion', protein: '34g', carbs: '35g', fat: '11g', fiber: '7g' },
+            comparison: 'Frische ungezuckerte Zutaten, voller natürlicher Vitamine und gesunder Fette',
+            ingredients: [
+              '250g frisches Lachsfilet oder mariniertes Hähnchenbrustfilet',
+              '120g Basmati-Vollkornreis oder Blumenkohlreis',
+              '1 reife Bio-Avocado',
+              'Brokkoliröschen, Edamame, Karottenstreifen & Frühlingszwiebeln',
+              '2 EL Tamari (glutenfreie Sojasauce ohne Zucker) + 1 TL Sesamöl + frischer Ingwer'
+            ],
+            instructions: [
+              'Vollkornreis gar kochen.',
+              'Lachs in der Pfanne sanft rosa anbraten.',
+              'Gemüse kurz im Wok knackig dünsten.',
+              'In einer Schale anrichten, mit Avocado und frischem Sesam garnieren und mit Tamari-Dressing servieren.'
+            ],
+            leonsVerdict: 'Pures Gehirnfutter! Die Kombination aus Omega-3 und knackigem Gemüse hält dich stundenlang fokussiert.'
+          }
+        };
+      } else if (lower.includes('pancake') || lower.includes('waffel') || lower.includes('crêpe') || lower.includes('brownie') || lower.includes('muffin') || lower.includes('kuchen') || lower.includes('cookie')) {
+        matchedData = {
+          productName: query,
+          brand: 'Bäckerei / Dessert',
+          category: 'Süße Backwaren',
+          originalCalories: '420 - 580 kcal (Weißmehl, Palmöl & Industriezucker)',
+          cleanCalories: '210 kcal / Portion (Hafer-Dinkel mit Eiweiß & Dattelsüße)',
+          calorieSavings: '-280 kcal (-55% Kalorien, 4x mehr Protein, 0g Industriezucker)',
+          shortSummary: 'Besteht aus weißem Mehl und flüssigem Zucker, die den Blutzucker in Sekunden hochjagen und dich nach einer Stunde müde machen. Portionsempfehlung: Bereite dir die fluffigen LEFIT-Protein-Pancakes zu!',
+          healthCheck: 'Transfette und isolierte Kohlenhydrate belasten den Stoffwechsel.',
+          portionTip: '2-3 Stück morgens oder vor dem Sport.',
+          cleanRecipe: {
+            title: `LEFIT Clean Protein ${query}`,
+            subtitle: '100% Natürlich • Aus feinen Haferflocken • Fluffig & Sättigend',
+            prepTime: '10 Min.',
+            difficulty: 'Sehr einfach',
+            servings: '2 Portionen',
+            originalCalories: '420 - 580 kcal',
+            cleanCalories: '210 kcal / Portion',
+            calorieSavings: '-280 kcal (-55% Kalorien, 22g Protein)',
+            macros: { calories: '210 kcal / Portion', protein: '22g', carbs: '20g', fat: '4.5g', fiber: '5g' },
+            comparison: 'Kein Weizenmehl, keine Butterberge – pure langanhaltende Energie',
+            ingredients: [
+              '60g feine Haferflocken (im Mixer fein gemahlen)',
+              '30g Whey- oder Pflanzenprotein (Vanille oder neutral)',
+              '1 reife Banane oder 2 EL Apfelmark',
+              '2 Bio-Eier (oder 100ml Mandelmilch + 1 EL Chiasamen)',
+              '1/2 TL Weinstein-Backpulver + 1 Prise Ceylon-Zimt',
+              'Frische Beeren als Topping'
+            ],
+            instructions: [
+              'Alle Zutaten im Standmixer 30 Sekunden zu einem cremigen Teig aufschlagen.',
+              'Eine beschichtete Pfanne leicht mit Kokosöl bepinseln.',
+              'Teig portionsweise hineingeben und von beiden Seiten bei mittlerer Hitze 2 Min. goldbraun ausbacken.',
+              'Mit frischen Heidelbeeren servieren und warm genießen!'
+            ],
+            leonsVerdict: 'Super fluffig und himmlisch süß – ganz ohne Zuckerschock! Der perfekte Start in einen aktiven Tag.'
+          }
+        };
+      } else if (lower.includes('currywurst') || lower.includes('pommes') || lower.includes('nuggets') || lower.includes('taco') || lower.includes('burrito') || lower.includes('wrap')) {
+        matchedData = {
+          productName: query,
+          brand: 'Imbiss / Fast Food',
+          category: 'Herzhaftes Streetfood',
+          originalCalories: '750 - 950 kcal (in Frittierfett gebacken mit Zuckersauce)',
+          cleanCalories: '390 kcal / Portion (Im Ofen gebacken mit reinen Zutaten)',
+          calorieSavings: '-450 kcal (-55% Kalorien, 65% weniger Fett)',
+          shortSummary: 'Frittieröl und gezuckerte Saucen machen herkömmliches Fast-Food extrem kalorienreich. Portionsempfehlung: Backe dir die knusprige LEFIT-Variante schonend im Ofen!',
+          healthCheck: 'Oxidierte Frittierfette und hohe Natriummengen belasten Gefäße und Verdauung.',
+          portionTip: '1 Portion bewusst genießen.',
+          cleanRecipe: {
+            title: `LEFIT Clean ${query} Style`,
+            subtitle: '100% Natürlich • Im Ofen kross gebacken • Selbstgemachte Würzsauce',
+            prepTime: '20 Min.',
+            difficulty: 'Einfach',
+            servings: '2 Portionen',
+            originalCalories: '750 - 950 kcal',
+            cleanCalories: '390 kcal / Portion',
+            calorieSavings: '-450 kcal (-55% Kalorien, 32g Protein)',
+            macros: { calories: '390 kcal / Portion', protein: '32g', carbs: '36g', fat: '10g', fiber: '7g' },
+            comparison: 'Ohne Friteusenfett, zuckerfreie Würzsauce aus echten Tomaten & Kräutern',
+            ingredients: [
+              '2 große Bio-Kartoffeln oder Süßkartoffeln (in Pommes-Stifte geschnitten)',
+              '250g Geflügel- oder Weiderind-Streifen (oder Tofu)',
+              '1 EL Olivenöl + Paprikapulver geräuchert + Meersalz',
+              'Für die Sauce: 150g passierte Tomaten, 1 TL Apfelessig, 1 TL Currypulver, 1 TL Dattelsirup'
+            ],
+            instructions: [
+              'Kartoffelstifte mit Olivenöl und Paprika vermengen und bei 200°C Umluft 25 Min. kross backen.',
+              'Fleischstreifen oder Tofu in der Pfanne goldbraun anbraten.',
+              'Tomatensauce mit Curry und Apfelessig 5 Minuten sämig einkochen.',
+              'Kross servieren – echter Streetfood-Geschmack ohne Reue!'
+            ],
+            leonsVerdict: 'Kross, würzig und ehrlich lecker – genau so muss modernes, sauberes Fast-Food schmecken!'
+          }
+        };
+      } else {
+        // Universal dynamic clean recipe for ANY food name in the world
+        matchedData = {
+          productName: query,
+          brand: 'Erkanntes Lebensmittel',
+          category: 'Erkanntes Essen / Produkt',
+          originalCalories: 'ca. 450 - 600 kcal (übliche Fertig-/Restaurant-Portion)',
+          cleanCalories: 'ca. 230 kcal / Portion (100% natürliche Vollwert-Zutaten)',
+          calorieSavings: '-270 kcal (-50% Kalorien, 0g Palmfett & kein Industriezucker)',
+          shortSummary: `Enthält meist industriell raffinierte Inhaltsstoffe, die deine Energie nach kurzer Zeit abstürzen lassen. Portionsempfehlung: Maximal 1 kleine Portion bewusst genießen oder direkt die vollwertige LEFIT-Alternative zubereiten!`,
+          healthCheck: `Industriell verarbeitete Zutaten können den Blutzuckerspiegel belasten und Heißhunger fördern.`,
+          portionTip: `Maximal 1 kleine Portion als bewusster Genuss.`,
+          cleanRecipe: {
+            title: `LEFIT Clean ${query}`,
+            subtitle: '100% Natürlich • Ohne künstlichen Mist • Maximale Vitalstoffe',
+            prepTime: '15 Min.',
+            difficulty: 'Einfach',
+            servings: '2 Portionen',
+            originalCalories: 'ca. 450 - 600 kcal (übliches Original)',
+            cleanCalories: 'ca. 230 kcal / Portion',
+            calorieSavings: '-270 kcal (-50% Kalorien, kein Industriezucker)',
+            macros: { calories: '230 kcal / Portion', protein: '16g', carbs: '24g', fat: '7.5g', fiber: '5.5g' },
+            comparison: '100% natürliche Vollwert-Zutaten, frei von künstlichen Aromen und Industriezucker',
+            ingredients: [
+              `Frische, naturbelassene Zutaten passend zu ${query}`,
+              'Hochwertiges Bio-Dinkelmehl oder Haferkleie',
+              'Hochwertiges pflanzliches oder Whey-Protein',
+              'Natürliche Süße aus Datteln oder Ahornsirup',
+              'Natives Bio-Olivenöl oder Mandelmus',
+              'Echte Gewürze & Meersalz'
             ],
             instructions: [
               'Alle naturbelassenen Zutaten schonend vorbereiten.',
-              'Ohne künstliche Zusätze oder gehärtete Fette zubereiten.',
-              'Frisch genießen und den Körper mit echten Nährstoffen versorgen!'
+              'Ohne künstliche Zusätze, Geschmacksverstärker oder Palmfett anrichten.',
+              'Frisch genießen und den Körper mit echter, sauberer Zellenergie versorgen!'
             ],
-            leonsVerdict: `Echter, sauberer Geschmack ohne Reue und voller natürlicher Energie für deinen Alltag!`
+            leonsVerdict: `Perfekt auf deinen Körper abgestimmt: Echter Geschmack ohne Reue und voller Power für deinen Tag!`
           }
-        },
-        source: 'custom-generator'
+        };
+      }
+
+      return res.json({
+        success: true,
+        recognized: true,
+        data: matchedData,
+        source: 'smart-culinary-engine',
       });
     }
 
-    // 4. If image was provided but recognition failed, DO NOT return bueno! Tell the user to retake or specify!
+    // 4. If image was provided but recognition failed, return non-recognized without fallback product
     if (imageBase64) {
+      if (isAutoScan) {
+        return res.json({
+          success: false,
+          recognized: false,
+        });
+      }
       return res.status(422).json({
         success: false,
+        recognized: false,
         error: 'Konnte das Produkt auf der Kamera nicht eindeutig erkennen. Bitte richte die Kamera direkt auf die Packung oder tippe den Namen ein.',
       });
     }

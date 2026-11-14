@@ -5,6 +5,8 @@ export interface AuthUser {
   provider: 'google' | 'apple' | 'email';
   avatar?: string;
   createdAt: number;
+  isAdmin?: boolean;
+  role?: 'admin' | 'user';
 }
 
 export interface RecipeMacros {
@@ -22,6 +24,9 @@ export interface CleanRecipe {
   difficulty: string;
   servings: string;
   macros: RecipeMacros;
+  originalCalories?: string;
+  cleanCalories?: string;
+  calorieSavings?: string;
   comparison: string;
   ingredients: string[];
   instructions: string[];
@@ -34,6 +39,9 @@ export interface ScannedProduct {
   productName: string;
   brand: string;
   category: string;
+  originalCalories?: string;
+  cleanCalories?: string;
+  calorieSavings?: string;
   healthCheck: string;
   portionTip: string;
   shortSummary?: string;

@@ -17,12 +17,10 @@ export const SavedRecipesModal: React.FC<SavedRecipesModalProps> = ({
   savedProducts,
   onDeleteProduct,
 }) => {
-  // Step 4: selectedProduct tracks the 2nd click inside the menu
   const [selectedProduct, setSelectedProduct] = useState<ScannedProduct | null>(null);
 
   if (!isOpen) return null;
 
-  // If user clicked on a product (2nd click), show the full recipe detail page
   if (selectedProduct) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-[#120305]/95 backdrop-blur-md overflow-hidden animate-fadeIn">
@@ -37,7 +35,6 @@ export const SavedRecipesModal: React.FC<SavedRecipesModalProps> = ({
     );
   }
 
-  // 1st Click view: List of scanned products in matte palette
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-[#120305]/95 backdrop-blur-md overflow-hidden animate-fadeIn">
       <div className="relative w-full max-w-2xl bg-[#1A070A] rounded-[2rem] border-2 border-[#660F0F] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -62,7 +59,7 @@ export const SavedRecipesModal: React.FC<SavedRecipesModalProps> = ({
 
           <button
             onClick={onClose}
-            className="p-1.5 rounded-full text-[#E0B0B0] hover:text-white hover:bg-white/10 transition-colors"
+            className="p-1.5 rounded-full text-[#E0B0B0] hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
             title="Schließen"
           >
             <X className="w-6 h-6" />
@@ -98,7 +95,6 @@ export const SavedRecipesModal: React.FC<SavedRecipesModalProps> = ({
                   onClick={() => setSelectedProduct(item)}
                 >
                   <div className="flex items-start gap-4 flex-1">
-                    {/* Emblem thumbnail with user's authentic logo */}
                     <div className="w-12 h-12 rounded-xl bg-[#1A070A] border border-[#660F0F] flex items-center justify-center shrink-0">
                       <LefitLogo variant="icon" size="sm" />
                     </div>
@@ -141,7 +137,7 @@ export const SavedRecipesModal: React.FC<SavedRecipesModalProps> = ({
                         e.stopPropagation();
                         onDeleteProduct(item.id);
                       }}
-                      className="p-2 rounded-xl text-[#A66D6D] hover:text-[#FF5757] hover:bg-[#1A070A] transition-colors"
+                      className="p-2 rounded-xl text-[#A66D6D] hover:text-[#FF5757] hover:bg-[#1A070A] transition-colors cursor-pointer"
                       title="Entfernen"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -150,7 +146,7 @@ export const SavedRecipesModal: React.FC<SavedRecipesModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setSelectedProduct(item)}
-                      className="px-4 py-2.5 rounded-xl bg-[#FF5757] group-hover:bg-[#E84E50] text-[#120305] text-xs sm:text-sm font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm transition-colors"
+                      className="px-4 py-2.5 rounded-xl bg-[#FF5757] group-hover:bg-[#E84E50] text-[#120305] text-xs sm:text-sm font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
                     >
                       <span>Rezept öffnen</span>
                       <ChevronRight className="w-4 h-4" />
